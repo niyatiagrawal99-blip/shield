@@ -1238,12 +1238,12 @@ def extract_text_ocr(uploaded):
             except ImportError:
                 return "", "pdf2image is not installed.\nRun: pip install pdf2image"
             try:
-                if POPPLER_PATH:
-                  pages = convert_from_bytes(file_bytes, dpi=300, poppler_path=POPPLER_PATH)
-	       		else:   
-                  pages = convert_from_bytes(file_bytes, dpi=300)
-            except Exception as e:
-                return "", f"pdf2image conversion failed:\n{str(e)}"
+				if POPPLER_PATH:
+					pages = convert_from_bytes(file_bytes, dpi=300, poppler_path=POPPLER_PATH)
+				else:
+					pages = convert_from_bytes(file_bytes, dpi=300)
+			except Exception as e:
+				return "", f"pdf2image conversion failed:\n{str(e)}"
             all_text = []
             for page_num, page_img in enumerate(pages, 1):
                 try:
