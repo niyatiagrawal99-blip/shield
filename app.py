@@ -377,14 +377,18 @@ def save_health_record(badge, record: dict):
         return None
 
 def _to_float(v):
-    """Safely convert to float, return None if not possible."""
-    if v is None: return None
+    """Safely convert to float, extract number if mixed text."""
+    if v is None:
+        return None
     try:
-        f = float(str(v).replace(",","").strip())
-        return f if not (f != f) else None  # reject NaN
+        import re
+        match = re.findall(r'\d+\.?\d*', str(v))
+        if not match:
+            return None
+        f = float(match[0])
+        return f if not (f != f) else None
     except:
         return None
-
 @st.cache_data(ttl=0)
 def get_health_records_cached(badge):
     """Cached wrapper — cleared on every save to force refresh."""
@@ -1113,6 +1117,27 @@ div[data-testid="stFormSubmitButton"] > button:hover {
 </style>
 """, unsafe_allow_html=True)
 
+st.markdown("""
+<style>
+/* Fix dropdown / expander dark background */
+div[data-baseweb="select"],
+div[data-baseweb="popover"],
+div[data-baseweb="menu"] {
+    background-color: #ffffff !important;
+}
+
+/* Fix expander */
+details, details summary {
+    background: #ffffff !important;
+}
+
+/* Fix general container override issue */
+[class*="css"] {
+    background: unset !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  HEALTH CLASSIFICATION LOGIC                                    ║
 # ╚══════════════════════════════════════════════════════════════════╝
@@ -1286,302 +1311,72 @@ def clean_ocr_text(raw: str) -> str:
 # ║  AI REPORT EXTRACTION ENGINE                                    ║
 # ╚══════════════════════════════════════════════════════════════════╝
 def extract_all_fields(text: str) -> dict:
+    import re
     result = {}
-    t = text
+    t = re.sub(r'\s+', ' ', text.lower())
 
+    # ── PATIENT INFO ──
     for pat in [
-        r'(?:patient(?:\s+name)?|name\s+of\s+patient|pt\.?\s+name)[:\s]+([A-Za-z][A-Za-z\s\.]{2,35})',
-        r'(?:Mr\.|Mrs\.|Ms\.|Dr\.)\s+([A-Za-z][A-Za-z\s\.]{2,30})',
-        r'(?:^|\n)Name\s*[:\-]\s*([A-Za-z][A-Za-z\s\.]{2,30})',
+        r'(?:patient(?:\s+name)?|name\s+of\s+patient|pt\.?\s+name)[:\s]+([a-z][a-z\s\.]{2,35})',
+        r'(?:mr\.|mrs\.|ms\.|dr\.)\s+([a-z][a-z\s\.]{2,30})',
+        r'(?:^|\n)name\s*[:\-]\s*([a-z][a-z\s\.]{2,30})',
     ]:
         m = re.search(pat, t, re.I | re.MULTILINE)
-        if m: result["Patient Name"] = m.group(1).strip().title(); break
-
-    m = re.search(r'(?:age|patient\s+age)[:\s]*(\d{1,3})\s*(?:years?|yrs?|y\.?o\.?)?', t, re.I)
-    if m: result["Age"] = m.group(1) + " yrs"
-
-    m = re.search(r'(?:gender|sex)[:\s]*(male|female|m|f)\b', t, re.I)
-    if m:
-        g = m.group(1).strip().lower()
-        result["Gender"] = "Male" if g in ("m", "male") else "Female"
-    elif re.search(r'\bmale\b', t, re.I):   result["Gender"] = "Male"
-    elif re.search(r'\bfemale\b', t, re.I): result["Gender"] = "Female"
-
-    for pat in [
-        r'(?:date|report\s+date|dated?)[:\s]*(\d{1,2}[\-/\.]\d{1,2}[\-/\.]\d{2,4})',
-        r'(\d{1,2}[\-/\.]\d{1,2}[\-/\.]\d{4})',
-        r'(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})',
-    ]:
-        m = re.search(pat, t, re.I)
-        if m: result["Report Date"] = m.group(1).strip(); break
-
-    m = re.search(r'(?:hospital|clinic|lab(?:oratory)?|medical\s+centre)[:\s]*([\w\s\.,&]+?)(?:\n|$)', t, re.I)
-    if m: result["Hospital / Lab"] = m.group(1).strip()[:60]
-
-    m = re.search(r'(?:doctor|physician|consultant|referred\s+by|dr\.)[:\s]*([A-Za-z][A-Za-z\s\.]{2,30})', t, re.I)
-    if m: result["Doctor"] = m.group(1).strip().title()
-
-    for pat in [
-        r'(?:blood\s*pressure|b\.?p\.?)[:\s=]+(\d{2,3})\s*/\s*(\d{2,3})',
-        r'(\d{2,3})\s*/\s*(\d{2,3})\s*mm\s*hg',
-        r'systolic[:\s=]+(\d{2,3}).*?diastolic[:\s=]+(\d{2,3})',
-    ]:
-        m = re.search(pat, t, re.I | re.DOTALL)
         if m:
-            sys_v, dia_v = int(m.group(1)), int(m.group(2))
-            result["BP Systolic (mmHg)"]  = str(sys_v)
-            result["BP Diastolic (mmHg)"] = str(dia_v)
+            result["Patient Name"] = m.group(1).strip().title()
             break
 
-    for label, pat in [
-        ("Fasting Blood Sugar (mg/dL)", r'(?:fasting\s*(?:blood\s*)?(?:sugar|glucose)|fbs)[:\s=]+(\d{2,3}(?:\.\d)?)'),
-        ("Random Blood Sugar (mg/dL)",  r'(?:random\s*(?:blood\s*)?sugar|rbs)[:\s=]+(\d{2,3}(?:\.\d)?)'),
-        ("Blood Glucose (mg/dL)",       r'(?:blood\s*glucose|glucose)[:\s=]+(\d{2,3}(?:\.\d)?)'),
-        ("HbA1c (%)",                   r'hba1c[:\s=]+(\d{1,2}(?:\.\d)?)'),
-    ]:
-        m = re.search(pat, t, re.I)
-        if m: result[label] = m.group(1); break
-
-    for label, pat in [
-        ("Total Cholesterol (mg/dL)", r'(?:total\s*cholesterol|t\.?\s*chol(?:esterol)?)[:\s=]+(\d{2,3}(?:\.\d)?)'),
-        ("Cholesterol (mg/dL)",       r'cholesterol[:\s=]+(\d{2,3}(?:\.\d)?)'),
-    ]:
-        m = re.search(pat, t, re.I)
-        if m: result["Cholesterol (mg/dL)"] = m.group(1); break
-
-    for label, pat in [
-        ("LDL Cholesterol (mg/dL)",  r'ldl[:\s=]+(\d{2,3}(?:\.\d)?)'),
-        ("HDL Cholesterol (mg/dL)",  r'hdl[:\s=]+(\d{2,3}(?:\.\d)?)'),
-        ("Triglycerides (mg/dL)",    r'(?:triglycerides?|tgl)[:\s=]+(\d{2,3}(?:\.\d)?)'),
-        ("VLDL (mg/dL)",             r'vldl[:\s=]+(\d{2,3}(?:\.\d)?)'),
-    ]:
-        m = re.search(pat, t, re.I)
-        if m: result[label] = m.group(1)
-
-    for label, pat in [
-        ("Haemoglobin (g/dL)", r'(?:haemoglobin|hemoglobin|hb|hgb)[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-        ("WBC Count (×10³/µL)",r'(?:wbc|white\s*blood\s*cells?)[:\s=]+(\d+(?:\.\d+)?)'),
-        ("RBC Count (×10⁶/µL)",r'(?:rbc|red\s*blood\s*cells?)[:\s=]+(\d+(?:\.\d+)?)'),
-        ("Platelets (×10³/µL)",r'(?:platelets?|plt)[:\s=]+(\d+(?:\.\d+)?)'),
-        ("PCV / Haematocrit (%)",r'(?:pcv|haematocrit|hematocrit)[:\s=]+(\d{1,2}(?:\.\d)?)'),
-        ("MCV (fL)",           r'mcv[:\s=]+(\d{2,3}(?:\.\d)?)'),
-        ("MCH (pg)",           r'mch[:\s=]+(\d{1,2}(?:\.\d)?)'),
-        ("MCHC (g/dL)",        r'mchc[:\s=]+(\d{2,3}(?:\.\d)?)'),
-    ]:
-        m = re.search(pat, t, re.I)
-        if m:
-            val = float(m.group(1))
-            if label.startswith("Haemoglobin") and not (5.0 <= val <= 20.0): continue
-            result[label] = str(val)
-
-    m = re.search(r'(?:spo2|oxygen\s*saturation|o2\s*sat)[:\s=]+(\d{2,3}(?:\.\d)?)\s*%?', t, re.I)
-    if m: result["SpO2 (%)"] = m.group(1)
-
-    m = re.search(r'(?:heart\s*rate|pulse|hr)[:\s=]+(\d{2,3})\s*(?:bpm)?', t, re.I)
+    m = re.search(r'(?:age|patient\s+age)[:\s]*(\d{1,3})', t)
     if m:
-        v = int(m.group(1))
-        if 30 <= v <= 220: result["Heart Rate (bpm)"] = str(v)
+        result["Age"] = m.group(1)
 
-    m = re.search(r'(?:temperature|temp)[:\s=]+(\d{2,3}(?:\.\d)?)\s*(?:°?[fc])?', t, re.I)
-    if m: result["Temperature (°F/°C)"] = m.group(1)
-
-    m = re.search(r'respiratory\s*rate[:\s=]+(\d{1,2})', t, re.I)
-    if m: result["Respiratory Rate (/min)"] = m.group(1)
-
-    m = re.search(r'(?:weight|wt)[:\s=]+(\d{2,3}(?:\.\d)?)\s*(?:kg)?', t, re.I)
+    m = re.search(r'(?:gender|sex)[:\s]*(male|female|m|f)', t)
     if m:
-        v = float(m.group(1))
-        if 20 <= v <= 250: result["Weight (kg)"] = str(v)
+        g = m.group(1)
+        result["Gender"] = "Male" if g in ["m", "male"] else "Female"
 
-    m = re.search(r'(?:height|ht)[:\s=]+(\d{2,3}(?:\.\d)?)\s*(?:cm)?', t, re.I)
-    if m:
-        v = float(m.group(1))
-        if 50 <= v <= 230: result["Height (cm)"] = str(v)
-
-    m = re.search(r'(?:bmi|body\s*mass\s*index)[:\s=]+(\d{1,2}(?:\.\d{1,2})?)', t, re.I)
-    if m: result["BMI"] = m.group(1)
-
-    for label, pat in [
-        ("Creatinine (mg/dL)",  r'(?:creatinine|creat)[:\s=]+(\d(?:\.\d{1,2})?)'),
-        ("Blood Urea (mg/dL)",  r'(?:blood\s*urea|urea)[:\s=]+(\d{1,3}(?:\.\d)?)'),
-        ("Uric Acid (mg/dL)",   r'uric\s*acid[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-        ("BUN (mg/dL)",         r'bun[:\s=]+(\d{1,3}(?:\.\d)?)'),
-        ("eGFR",                r'egfr[:\s=]+(\d{1,3}(?:\.\d)?)'),
-    ]:
-        m = re.search(pat, t, re.I)
-        if m: result[label] = m.group(1)
-
-    for label, pat in [
-        ("SGPT / ALT (U/L)",   r'(?:sgpt|alt)[:\s=]+(\d{1,4}(?:\.\d)?)'),
-        ("SGOT / AST (U/L)",   r'(?:sgot|ast)[:\s=]+(\d{1,4}(?:\.\d)?)'),
-        ("Bilirubin Total (mg/dL)", r'(?:total\s*bilirubin|bilirubin\s*total)[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-        ("Bilirubin Direct (mg/dL)",r'(?:direct\s*bilirubin)[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-        ("Alkaline Phosphatase (U/L)",r'(?:alkaline\s*phosphatase|alp)[:\s=]+(\d{1,4}(?:\.\d)?)'),
-        ("Total Protein (g/dL)", r'total\s*protein[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-        ("Albumin (g/dL)",       r'albumin[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-    ]:
-        m = re.search(pat, t, re.I)
-        if m: result[label] = m.group(1)
-
-    for label, pat in [
-        ("TSH (mIU/L)", r'tsh[:\s=]+(\d{1,3}(?:\.\d{1,3})?)'),
-        ("T3 (ng/dL)",  r'\bt3\b[:\s=]+(\d{1,3}(?:\.\d{1,2})?)'),
-        ("T4 (µg/dL)",  r'\bt4\b[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-        ("Free T3",     r'free\s*t3[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-        ("Free T4",     r'free\s*t4[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-    ]:
-        m = re.search(pat, t, re.I)
-        if m: result[label] = m.group(1)
-
-    for label, pat in [
-        ("Sodium (mEq/L)",    r'sodium[:\s=]+(\d{2,3}(?:\.\d)?)'),
-        ("Potassium (mEq/L)", r'potassium[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-        ("Chloride (mEq/L)",  r'chloride[:\s=]+(\d{2,3}(?:\.\d)?)'),
-        ("Bicarbonate",       r'bicarbonate[:\s=]+(\d{1,2}(?:\.\d)?)'),
-        ("Calcium (mg/dL)",   r'calcium[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-        ("Phosphorus (mg/dL)",r'phosphorus[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-        ("Magnesium (mg/dL)", r'magnesium[:\s=]+(\d{1,2}(?:\.\d{1,2})?)'),
-    ]:
-        m = re.search(pat, t, re.I)
-        if m: result[label] = m.group(1)
-
-    for label, pat in [
-        ("Vitamin D (ng/mL)",  r'(?:vitamin\s*d|25-?oh)[:\s=]+(\d{1,3}(?:\.\d)?)'),
-        ("Vitamin B12 (pg/mL)",r'(?:vitamin\s*b12|b12)[:\s=]+(\d{1,4}(?:\.\d)?)'),
-        ("Iron (µg/dL)",       r'(?:serum\s*iron|iron)[:\s=]+(\d{1,3}(?:\.\d)?)'),
-        ("Ferritin (ng/mL)",   r'ferritin[:\s=]+(\d{1,4}(?:\.\d)?)'),
-        ("Folate (ng/mL)",     r'folate[:\s=]+(\d{1,2}(?:\.\d)?)'),
-    ]:
-        m = re.search(pat, t, re.I)
-        if m: result[label] = m.group(1)
-
+    # ── BLOOD PRESSURE ──
     for pat in [
-        r'(?:diagnosis|diagnosed\s+(?:as|with)|clinical\s+impression|impression|findings?)[:\s]*([\w\s,\.;\/\-]+?)(?:\n\n|\n[A-Z]|$)',
-        r'(?:disease|condition|disorder)[:\s]*([\w\s,\.;\/\-]+?)(?:\n|$)',
+        r'(?:blood\s*pressure|b\.?p\.?)[:\s=]+(\d{2,3})\s*/\s*(\d{2,3})',
+        r'(\d{2,3})\s*/\s*(\d{2,3})'
     ]:
-        m = re.search(pat, t, re.I | re.DOTALL)
+        m = re.search(pat, t)
         if m:
-            raw = m.group(1).strip().replace("\n", ", ")
-            raw = re.sub(r'\s{2,}', ' ', raw)
-            if len(raw) > 3: result["Diagnosis / Finding"] = raw[:250]; break
+            result["BP Systolic (mmHg)"] = m.group(1)
+            result["BP Diastolic (mmHg)"] = m.group(2)
+            break
 
-    disease_kw = ["diabetes","hypertension","anemia","anaemia","tuberculosis","malaria","dengue",
-                  "typhoid","asthma","pneumonia","covid","hypothyroidism","hyperthyroidism",
-                  "arthritis","cardiac","heart failure","kidney","hepatitis","fever","infection",
-                  "fracture","obesity","cholesterol","stroke"]
-    hits = [d.capitalize() for d in disease_kw if re.search(r'\b'+d+r'\b', t, re.I)]
-    if hits and "Diagnosis / Finding" not in result:
-        result["Diagnosis / Finding"] = ", ".join(hits[:6])
-
-    drug_kw = ["metformin","amlodipine","atorvastatin","paracetamol","ibuprofen","aspirin",
-               "amoxicillin","azithromycin","cetirizine","omeprazole","losartan","lisinopril",
-               "insulin","levothyroxine","pantoprazole","ciprofloxacin","doxycycline",
-               "prednisolone","montelukast","salbutamol","folic acid","vitamin","calcium",
-               "iron","zinc","metoprolol","atenolol","ramipril","telmisartan","glimepiride"]
-    found_drugs = [d.capitalize() for d in drug_kw if re.search(r'\b'+d+r'\b', t, re.I)]
-    m = re.search(r'(?:rx|prescription|medicines?|drugs?|treatment)[:\s]*([\w\s,\.\-;0-9mg]+?)(?:\n\n|$)', t, re.I | re.DOTALL)
+    # ── SUGAR ──
+    m = re.search(r'(?:sugar|glucose)[^\d]*(\d{2,3})', t)
     if m:
-        result["Medications / Rx"] = m.group(1).strip().replace("\n", ", ")[:300]
-    elif found_drugs:
-        result["Medications / Rx"] = ", ".join(found_drugs[:10])
+        result["Fasting Blood Sugar (mg/dL)"] = m.group(1)
+
+    # ── CHOLESTEROL ──
+    m = re.search(r'cholesterol[^\d]*(\d{2,3})', t)
+    if m:
+        result["Cholesterol (mg/dL)"] = m.group(1)
+
+    # ── HAEMOGLOBIN ──
+    m = re.search(r'(?:hb|hemoglobin)[^\d]*(\d{1,2}\.?\d?)', t)
+    if m:
+        result["Haemoglobin (g/dL)"] = m.group(1)
+
+    # ── HEART RATE ──
+    m = re.search(r'(?:pulse|heart rate)[^\d]*(\d{2,3})', t)
+    if m:
+        result["Heart Rate (bpm)"] = m.group(1)
+
+    # ── SPO2 ──
+    m = re.search(r'(?:spo2|oxygen)[^\d]*(\d{2,3})', t)
+    if m:
+        result["SpO2 (%)"] = m.group(1)
+
+    # ── FALLBACK (IMPORTANT) ──
+    numbers = re.findall(r'\b\d{1,3}(?:\.\d+)?\b', t)
+    if numbers:
+        result["Detected Numbers"] = ", ".join(numbers[:10])
 
     return result
-
-def parse_report_date(date_str):
-    if not date_str:
-        return str(datetime.date.today())
-    try:
-        for fmt in ["%d-%m-%Y", "%d/%m/%Y", "%m-%d-%Y", "%m/%d/%Y", "%Y-%m-%d", "%d %b %Y", "%d %B %Y"]:
-            try:
-                d = datetime.datetime.strptime(date_str.strip(), fmt).date()
-                return str(d)
-            except ValueError:
-                pass
-        return str(datetime.date.today())
-    except:
-        return str(datetime.date.today())
-
-
-FIELD_CATEGORIES = {
-    "Patient Info":     ["Patient Name","Age","Gender","Report Date","Hospital / Lab","Doctor","Diagnosis / Finding","Medications / Rx"],
-    "Blood Pressure":   ["BP Systolic (mmHg)","BP Diastolic (mmHg)"],
-    "Blood Sugar":      ["Fasting Blood Sugar (mg/dL)","Random Blood Sugar (mg/dL)","Blood Glucose (mg/dL)","HbA1c (%)"],
-    "Lipid Panel":      ["Cholesterol (mg/dL)","Total Cholesterol (mg/dL)","LDL Cholesterol (mg/dL)","HDL Cholesterol (mg/dL)","Triglycerides (mg/dL)","VLDL (mg/dL)"],
-    "Complete Blood Count": ["Haemoglobin (g/dL)","WBC Count (×10³/µL)","RBC Count (×10⁶/µL)","Platelets (×10³/µL)","PCV / Haematocrit (%)","MCV (fL)","MCH (pg)","MCHC (g/dL)"],
-    "Vitals":           ["SpO2 (%)","Heart Rate (bpm)","Temperature (°F/°C)","Respiratory Rate (/min)","Weight (kg)","Height (cm)","BMI"],
-    "Kidney / Renal":   ["Creatinine (mg/dL)","Blood Urea (mg/dL)","Uric Acid (mg/dL)","BUN (mg/dL)","eGFR"],
-    "Liver Function":   ["SGPT / ALT (U/L)","SGOT / AST (U/L)","Bilirubin Total (mg/dL)","Bilirubin Direct (mg/dL)","Alkaline Phosphatase (U/L)","Total Protein (g/dL)","Albumin (g/dL)"],
-    "Thyroid":          ["TSH (mIU/L)","T3 (ng/dL)","T4 (µg/dL)","Free T3","Free T4"],
-    "Electrolytes":     ["Sodium (mEq/L)","Potassium (mEq/L)","Chloride (mEq/L)","Bicarbonate","Calcium (mg/dL)","Phosphorus (mg/dL)","Magnesium (mg/dL)"],
-    "Vitamins & Minerals":["Vitamin D (ng/mL)","Vitamin B12 (pg/mL)","Iron (µg/dL)","Ferritin (ng/mL)","Folate (ng/mL)"],
-}
-
-NORMAL_RANGES = {
-    "BP Systolic (mmHg)":          ("90–119",  "120–139", "≥140",  lambda v: "p-ok" if float(v)<120 else "p-warn" if float(v)<140 else "p-danger"),
-    "BP Diastolic (mmHg)":         ("60–79",   "80–89",   "≥90",   lambda v: "p-ok" if float(v)<80 else "p-warn" if float(v)<90 else "p-danger"),
-    "Fasting Blood Sugar (mg/dL)": ("70–99",   "100–125","≥126",   lambda v: "p-ok" if float(v)<100 else "p-warn" if float(v)<126 else "p-danger"),
-    "Cholesterol (mg/dL)":         ("<200",    "200–239","≥240",   lambda v: "p-ok" if float(v)<200 else "p-warn" if float(v)<240 else "p-danger"),
-    "Total Cholesterol (mg/dL)":   ("<200",    "200–239","≥240",   lambda v: "p-ok" if float(v)<200 else "p-warn" if float(v)<240 else "p-danger"),
-    "LDL Cholesterol (mg/dL)":     ("<100",    "100–159","≥160",   lambda v: "p-ok" if float(v)<100 else "p-warn" if float(v)<160 else "p-danger"),
-    "HDL Cholesterol (mg/dL)":     (">60",     "40–60",  "<40",    lambda v: "p-ok" if float(v)>60 else "p-warn" if float(v)>=40 else "p-danger"),
-    "Triglycerides (mg/dL)":       ("<150",    "150–199","≥200",   lambda v: "p-ok" if float(v)<150 else "p-warn" if float(v)<200 else "p-danger"),
-    "Haemoglobin (g/dL)":          ("M≥13.5/F≥12","Mild Low","<11.5",lambda v: "p-ok" if float(v)>=13.5 else "p-warn" if float(v)>=11.5 else "p-danger"),
-    "SpO2 (%)":                    ("≥95",     "90–94",  "<90",    lambda v: "p-ok" if float(v)>=95 else "p-warn" if float(v)>=90 else "p-danger"),
-    "Heart Rate (bpm)":            ("60–100",  "<60 or >100","Abnormal",lambda v: "p-ok" if 60<=float(v)<=100 else "p-warn"),
-    "BMI":                         ("18.5–24.9","25–29.9","≥30",   lambda v: "p-ok" if 18.5<=float(v)<25 else "p-warn" if float(v)<30 else "p-danger"),
-    "Creatinine (mg/dL)":          ("0.6–1.2", "1.3–1.9","≥2",    lambda v: "p-ok" if float(v)<=1.2 else "p-warn" if float(v)<2 else "p-danger"),
-    "TSH (mIU/L)":                 ("0.4–4.0", "4.1–10", ">10",   lambda v: "p-ok" if 0.4<=float(v)<=4.0 else "p-warn" if float(v)<=10 else "p-danger"),
-    "HbA1c (%)":                   ("<5.7",    "5.7–6.4","≥6.5",  lambda v: "p-ok" if float(v)<5.7 else "p-warn" if float(v)<6.5 else "p-danger"),
-    "SGPT / ALT (U/L)":            ("<40",     "40–55",  ">55",   lambda v: "p-ok" if float(v)<40 else "p-warn" if float(v)<=55 else "p-danger"),
-    "SGOT / AST (U/L)":            ("<40",     "40–55",  ">55",   lambda v: "p-ok" if float(v)<40 else "p-warn" if float(v)<=55 else "p-danger"),
-    "Blood Urea (mg/dL)":          ("7–20",    "21–40",  ">40",   lambda v: "p-ok" if float(v)<=20 else "p-warn" if float(v)<=40 else "p-danger"),
-    "Uric Acid (mg/dL)":           ("3.5–7.2", "7.3–9",  ">9",   lambda v: "p-ok" if float(v)<=7.2 else "p-warn" if float(v)<=9 else "p-danger"),
-    "Vitamin D (ng/mL)":           ("30–100",  "20–29",  "<20",   lambda v: "p-ok" if float(v)>=30 else "p-warn" if float(v)>=20 else "p-danger"),
-    "Vitamin B12 (pg/mL)":         ("200–900","<200",   "<200",   lambda v: "p-ok" if float(v)>=200 else "p-danger"),
-    "Sodium (mEq/L)":              ("135–145","<135 or >145","",  lambda v: "p-ok" if 135<=float(v)<=145 else "p-warn"),
-    "Potassium (mEq/L)":           ("3.5–5.0","<3.5 or >5","",   lambda v: "p-ok" if 3.5<=float(v)<=5.0 else "p-warn"),
-}
-
-def get_status(field, val_str):
-    try:
-        fn = NORMAL_RANGES.get(field, ("", "", "", None))
-        if fn[3]:
-            return fn[3](val_str)
-    except:
-        pass
-    return "p-ok"
-
-FIELD_TO_DB = {
-    "BP Systolic (mmHg)":          "bp_systolic",
-    "BP Diastolic (mmHg)":         "bp_diastolic",
-    "Fasting Blood Sugar (mg/dL)": "sugar",
-    "Random Blood Sugar (mg/dL)":  "sugar",
-    "Blood Glucose (mg/dL)":       "sugar",
-    "HbA1c (%)":                   "hba1c",
-    "Cholesterol (mg/dL)":         "cholesterol",
-    "Total Cholesterol (mg/dL)":   "cholesterol",
-    "LDL Cholesterol (mg/dL)":     "ldl",
-    "HDL Cholesterol (mg/dL)":     "hdl",
-    "Triglycerides (mg/dL)":       "triglycerides",
-    "Haemoglobin (g/dL)":          "haemoglobin",
-    "WBC Count (×10³/µL)":         "wbc",
-    "RBC Count (×10⁶/µL)":         "rbc",
-    "Platelets (×10³/µL)":         "platelets",
-    "SpO2 (%)":                    "spo2",
-    "Heart Rate (bpm)":            "heart_rate",
-    "Weight (kg)":                 "weight",
-    "Height (cm)":                 "height",
-    "BMI":                         "bmi",
-    "Creatinine (mg/dL)":          "creatinine",
-    "Blood Urea (mg/dL)":          "urea",
-    "Uric Acid (mg/dL)":           "uric_acid",
-    "TSH (mIU/L)":                 "tsh",
-    "Diagnosis / Finding":         "diagnosis",
-    "Medications / Rx":            "medicines",
-    "Doctor":                      "doctor_name",
-    "Hospital / Lab":              "lab_name",
-}
-
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  SESSION STATE                                                  ║
 # ╚══════════════════════════════════════════════════════════════════╝
@@ -2538,8 +2333,12 @@ def page_report():
         st.markdown("""<div class="alert-box alert-warn">⚠️ No parameters detected.</div>""", unsafe_allow_html=True)
         st.text_area("OCR Output:", value=cleaned[:2000], height=200)
         return
-
-    st.success(f"✅ {total_found} field(s) successfully extracted.")
+        
+        numeric_count = sum(
+        1 for v in extracted.values()
+        if v and any(c.isdigit() for c in str(v))
+        )
+        st.success(f"✅ {total_found} field(s) successfully extracted. {numeric_count} numeric values detected.")
 
     # Generate and display analysis
     analysis = generate_analysis(extracted)
