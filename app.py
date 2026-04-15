@@ -1240,7 +1240,7 @@ def extract_text_ocr(uploaded):
             try:
                 if POPPLER_PATH:
                   pages = convert_from_bytes(file_bytes, dpi=300, poppler_path=POPPLER_PATH)
-	       else:   
+	       		else:   
                   pages = convert_from_bytes(file_bytes, dpi=300)
             except Exception as e:
                 return "", f"pdf2image conversion failed:\n{str(e)}"
